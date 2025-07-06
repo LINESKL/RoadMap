@@ -10,6 +10,8 @@ import bcrypt
 import jwt
 from datetime import datetime, timedelta
 import openai
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
 
 MONGO_USERS_COLLECTION = db['users']
 
@@ -503,6 +505,53 @@ def gpt_check_test(request):
         gpt_reply = response.choices[0].message['content'].strip().lower()
         is_correct = gpt_reply.startswith('да')
         return JsonResponse({'correct': is_correct})
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+@csrf_exempt
+def upload_avatar(request):
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Method not allowed'}, status=405)
+    
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return JsonResponse({'error': 'Not authenticated'}, status=401)
+    
+    token = auth_header.split(' ')[1]
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        user = MONGO_USERS_COLLECTION.find_one({'username': payload['username']})
+        if not user:
+            return JsonResponse({'error': 'User not found'}, status=404)
+        
+        if 'avatar' not in request.FILES:
+            return JsonResponse({'error': 'No file uploaded'}, status=400)
+        
+        avatar_file = request.FILES['avatar']
+        
+        # Validate file size (5MB max)
+        if avatar_file.size > 5 * 1024 * 1024:
+            return JsonResponse({'error': 'File too large'}, status=400)
+        
+        # Validate file type
+        if not avatar_file.content_type.startswith('image/'):
+            return JsonResponse({'error': 'Invalid file type'}, status=400)
+        
+        # Generate unique filename
+        filename = f"avatars/{user['username']}_{int(time.time())}.{avatar_file.name.split('.')[-1]}"
+        
+        # Save file
+        saved_path = default_storage.save(filename, ContentFile(avatar_file.read()))
+        avatar_url = f"/media/{saved_path}"
+        
+        # Update user in database
+        MONGO_USERS_COLLECTION.update_one(
+            {'username': user['username']},
+            {'$set': {'avatar': avatar_url}}
+        )
+        
+        return JsonResponse({'avatar_url': avatar_url})
+        
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
 
